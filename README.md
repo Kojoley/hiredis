@@ -2,6 +2,8 @@
 
 # HIREDIS
 
+# Ported to MinGW
+
 Hiredis is a minimalistic C client library for the [Redis](http://redis.io/) database.
 
 It is minimalistic because it just adds minimal support for the protocol, but

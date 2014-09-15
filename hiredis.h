@@ -162,11 +162,23 @@ int redisvFormatCommand(char **target, const char *format, va_list ap);
 int redisFormatCommand(char **target, const char *format, ...);
 int redisFormatCommandArgv(char **target, int argc, const char **argv, const size_t *argvlen);
 
+#ifdef __MINGW32__
+/* This is defined in winsock2.h, but it is too complicated to include it here */
+#  ifdef _WIN64
+typedef unsigned __int64 SOCKET;
+#  else
+typedef unsigned int SOCKET;
+#  endif
+#  define INVALID_SOCKET (SOCKET)(~0)
+#else
+typedef int SOCKET;
+#  define INVALID_SOCKET (-1)
+#endif
 /* Context for a connection to Redis */
 typedef struct redisContext {
     int err; /* Error flags, 0 when there is no error */
     char errstr[128]; /* String representation of error when applicable */
-    int fd;
+    SOCKET fd;
     int flags;
     char *obuf; /* Write buffer */
     redisReader *reader; /* Protocol reader */
@@ -176,14 +188,16 @@ redisContext *redisConnect(const char *ip, int port);
 redisContext *redisConnectWithTimeout(const char *ip, int port, const struct timeval tv);
 redisContext *redisConnectNonBlock(const char *ip, int port);
 redisContext *redisConnectBindNonBlock(const char *ip, int port, const char *source_addr);
+#if !defined(_WIN32)
 redisContext *redisConnectUnix(const char *path);
 redisContext *redisConnectUnixWithTimeout(const char *path, const struct timeval tv);
 redisContext *redisConnectUnixNonBlock(const char *path);
-redisContext *redisConnectFd(int fd);
+#endif
+redisContext *redisConnectFd(SOCKET fd);
 int redisSetTimeout(redisContext *c, const struct timeval tv);
 int redisEnableKeepAlive(redisContext *c);
 void redisFree(redisContext *c);
-int redisFreeKeepFd(redisContext *c);
+SOCKET redisFreeKeepFd(redisContext *c);
 int redisBufferRead(redisContext *c);
 int redisBufferWrite(redisContext *c, int *done);
 

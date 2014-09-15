@@ -37,6 +37,11 @@
 #include <errno.h>
 #include <ctype.h>
 
+#if defined(_WIN32)
+#  include <winsock2.h>
+#  include "portability.h"
+#endif
+
 #include "hiredis.h"
 #include "net.h"
 #include "sds.h"
@@ -985,7 +990,14 @@ void __redisSetError(redisContext *c, int type, const char *str) {
     } else {
         /* Only REDIS_ERR_IO may lack a description! */
         assert(type == REDIS_ERR_IO);
+#if defined(_WIN32)
+        FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM |
+                      FORMAT_MESSAGE_MAX_WIDTH_MASK,
+                      NULL, wsaerrno, 0,
+                      (LPSTR)&c->errstr, sizeof(c->errstr), NULL);
+#else
         strerror_r(errno,c->errstr,sizeof(c->errstr));
+#endif
     }
 }
 
@@ -1006,18 +1018,21 @@ static redisContext *redisContextInit(void) {
 void redisFree(redisContext *c) {
     if (c == NULL)
         return;
-    if (c->fd > 0)
-        close(c->fd);
+    if (c->fd != INVALID_SOCKET)
+        closesocket(c->fd);
     if (c->obuf != NULL)
         sdsfree(c->obuf);
     if (c->reader != NULL)
         redisReaderFree(c->reader);
     free(c);
+#if defined(_WIN32)
+    WSACleanup();
+#endif
 }
 
-int redisFreeKeepFd(redisContext *c) {
-	int fd = c->fd;
-	c->fd = -1;
+SOCKET redisFreeKeepFd(redisContext *c) {
+    SOCKET fd = c->fd;
+    c->fd = INVALID_SOCKET;
 	redisFree(c);
 	return fd;
 }
@@ -1069,6 +1084,7 @@ redisContext *redisConnectBindNonBlock(const char *ip, int port,
     return c;
 }
 
+#if !defined(_WIN32)
 redisContext *redisConnectUnix(const char *path) {
     redisContext *c;
 
@@ -1104,8 +1120,9 @@ redisContext *redisConnectUnixNonBlock(const char *path) {
     redisContextConnectUnix(c,path,NULL);
     return c;
 }
+#endif
 
-redisContext *redisConnectFd(int fd) {
+redisContext *redisConnectFd(SOCKET fd) {
     redisContext *c;
 
     c = redisContextInit();
@@ -1144,12 +1161,22 @@ int redisBufferRead(redisContext *c) {
     if (c->err)
         return REDIS_ERR;
 
-    nread = read(c->fd,buf,sizeof(buf));
+    nread = readsocket(c->fd,buf,sizeof(buf));
     if (nread == -1) {
+#if defined(_WIN32)
+        SetErrnoFromWinsockError(WSAGetLastError());
+        if (errno == EWOULDBLOCK || errno == ETIMEDOUT) {
+            errno = EAGAIN;
+        }
+#endif
         if ((errno == EAGAIN && !(c->flags & REDIS_BLOCK)) || (errno == EINTR)) {
             /* Try again later */
         } else {
-            __redisSetError(c,REDIS_ERR_IO,NULL);
+            if (errno == ECONNRESET) {
+               __redisSetError(c,REDIS_ERR_EOF,"Connection reset by peer");
+            } else {
+               __redisSetError(c,REDIS_ERR_IO,NULL);
+            }
             return REDIS_ERR;
         }
     } else if (nread == 0) {
@@ -1181,8 +1208,14 @@ int redisBufferWrite(redisContext *c, int *done) {
         return REDIS_ERR;
 
     if (sdslen(c->obuf) > 0) {
-        nwritten = write(c->fd,c->obuf,sdslen(c->obuf));
+        nwritten = writesocket(c->fd,c->obuf,sdslen(c->obuf));
         if (nwritten == -1) {
+#if defined(_WIN32)
+            SetErrnoFromWinsockError(WSAGetLastError());
+            if (errno == EWOULDBLOCK || errno == ETIMEDOUT) {
+                errno = EAGAIN;
+            }
+#endif
             if ((errno == EAGAIN && !(c->flags & REDIS_BLOCK)) || (errno == EINTR)) {
                 /* Try again later */
             } else {

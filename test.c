@@ -65,7 +65,7 @@ static redisContext *select_database(redisContext *c) {
     return c;
 }
 
-static int disconnect(redisContext *c, int keep_fd) {
+static SOCKET disconnect(redisContext *c, int keep_fd) {
     redisReply *reply;
 
     /* Make sure we're on DB 9. */
@@ -80,7 +80,7 @@ static int disconnect(redisContext *c, int keep_fd) {
     if (keep_fd)
         return redisFreeKeepFd(c);
     redisFree(c);
-    return -1;
+    return INVALID_SOCKET;
 }
 
 static redisContext *connect(struct config config) {
@@ -89,8 +89,14 @@ static redisContext *connect(struct config config) {
     if (config.type == CONN_TCP) {
         c = redisConnect(config.tcp.host, config.tcp.port);
     } else if (config.type == CONN_UNIX) {
+#if !defined(_WIN32)
         c = redisConnectUnix(config.unix.path);
+#else
+        printf("Error: UNIX sockets are not supported on Windows platform\n");
+        return;
+#endif
     } else if (config.type == CONN_FD) {
+#if !defined(_WIN32)
         /* Create a dummy connection just to get an fd to inherit */
         redisContext *dummy_ctx = redisConnectUnix(config.unix.path);
         if (dummy_ctx) {
@@ -98,6 +104,10 @@ static redisContext *connect(struct config config) {
             printf("Connecting to inherited fd %d\n", fd);
             c = redisConnectFd(fd);
         }
+#else
+        printf("Error: fd is not supported on Windows platform\n");
+        return;
+#endif
     } else {
         assert(NULL);
     }
@@ -350,10 +360,12 @@ static void test_blocking_connection_errors(void) {
         strcmp(c->errstr,"Connection refused") == 0);
     redisFree(c);
 
+#if !defined(_WIN32)
     test("Returns error when the unix socket path doesn't accept connections: ");
     c = redisConnectUnix((char*)"/tmp/idontexist.sock");
     test_cond(c->err == REDIS_ERR_IO); /* Don't care about the message... */
     redisFree(c);
+#endif
 }
 
 static void test_blocking_connection(struct config config) {
@@ -473,7 +485,8 @@ static void test_blocking_io_errors(struct config config) {
      * issued to find out the socket was closed by the server. In both
      * conditions, the error will be set to EOF. */
     assert(c->err == REDIS_ERR_EOF &&
-        strcmp(c->errstr,"Server closed the connection") == 0);
+       (strcmp(c->errstr,"Connection reset by peer") == 0 ||
+        strcmp(c->errstr,"Server closed the connection") == 0));
     redisFree(c);
 
     c = connect(config);
@@ -686,8 +699,10 @@ int main(int argc, char **argv) {
     int throughput = 1;
     int test_inherit_fd = 1;
 
+#if !defined(_WIN32)
     /* Ignore broken pipe signal (for I/O error tests). */
     signal(SIGPIPE, SIG_IGN);
+#endif
 
     /* Parse command line options. */
     argv++; argc--;
@@ -725,6 +740,7 @@ int main(int argc, char **argv) {
     test_append_formatted_commands(cfg);
     if (throughput) test_throughput(cfg);
 
+#if !defined(_WIN32)
     printf("\nTesting against Unix socket connection (%s):\n", cfg.unix.path);
     cfg.type = CONN_UNIX;
     test_blocking_connection(cfg);
@@ -736,6 +752,7 @@ int main(int argc, char **argv) {
         cfg.type = CONN_FD;
         test_blocking_connection(cfg);
     }
+#endif
 
 
     if (fails) {
